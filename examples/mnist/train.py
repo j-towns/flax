@@ -18,11 +18,11 @@ This script trains a simple Convolutional Neural Net on the MNIST dataset.
 The data is loaded using tensorflow_datasets.
 
 """
-
 from absl import app
 from absl import flags
 from absl import logging
 
+from flax import jax_utils
 from flax import nn
 from flax import optim
 
@@ -86,9 +86,11 @@ def create_model(key):
   return model
 
 
-def create_optimizer(model, learning_rate, beta):
-  optimizer_def = optim.Momentum(learning_rate=learning_rate, beta=beta)
-  optimizer = optimizer_def.create(model)
+@jax.pmap
+def create_optimizers(rng):
+  optimizer_def = optim.Momentum(
+      learning_rate=FLAGS.learning_rate, beta=FLAGS.momentum)
+  optimizer = optimizer_def.create(create_model(rng))
   return optimizer
 
 
@@ -111,7 +113,7 @@ def compute_metrics(logits, labels):
   return metrics
 
 
-@jax.jit
+@jax.pmap
 def train_step(optimizer, batch):
   """Train for a single step."""
   def loss_fn(model):
@@ -125,13 +127,13 @@ def train_step(optimizer, batch):
   return optimizer, metrics
 
 
-@jax.jit
+@jax.pmap
 def eval_step(model, batch):
   logits = model(batch['image'])
   return compute_metrics(logits, batch['label'])
 
 
-def train_epoch(optimizer, train_ds, batch_size, epoch, rng):
+def train_epoch(optimizers, train_ds, batch_size, epoch, rng):
   """Train for a single epoch."""
   train_ds_size = len(train_ds['image'])
   steps_per_epoch = train_ds_size // batch_size
@@ -142,25 +144,27 @@ def train_epoch(optimizer, train_ds, batch_size, epoch, rng):
   batch_metrics = []
   for perm in perms:
     batch = {k: v[perm] for k, v in train_ds.items()}
-    optimizer, metrics = train_step(optimizer, batch)
+    batch = jax_utils.replicate(batch)
+    optimizers, metrics = train_step(optimizers, batch)
     batch_metrics.append(metrics)
 
   # compute mean of metrics across each batch in epoch.
   batch_metrics_np = jax.device_get(batch_metrics)
+  batch_metrics_np = jax.tree_multimap(lambda *xs: onp.array(xs),
+                                       *batch_metrics_np)
   epoch_metrics_np = {
-      k: onp.mean([metrics[k] for metrics in batch_metrics_np])
-      for k in batch_metrics_np[0]}
-
-  logging.info('train epoch: %d, loss: %.4f, accuracy: %.2f', epoch,
+      k: onp.mean(batch_metrics_np[k], axis=0) for k in batch_metrics_np
+  }
+  logging.info('train epoch: %d, loss: %s, accuracy: %s', epoch,
                epoch_metrics_np['loss'], epoch_metrics_np['accuracy'] * 100)
 
-  return optimizer, epoch_metrics_np
+  return optimizers, epoch_metrics_np
 
 
-def eval_model(model, test_ds):
-  metrics = eval_step(model, test_ds)
+def eval_model(models, test_ds):
+  metrics = eval_step(models, test_ds)
   metrics = jax.device_get(metrics)
-  summary = jax.tree_map(lambda x: x.item(), metrics)
+  summary = metrics
   return summary['loss'], summary['accuracy']
 
 
@@ -178,18 +182,18 @@ def train(train_ds, test_ds):
   batch_size = FLAGS.batch_size
   num_epochs = FLAGS.num_epochs
 
-  model = create_model(rng)
-  optimizer = create_optimizer(model, FLAGS.learning_rate, FLAGS.momentum)
+  optimizers = create_optimizers(random.split(rng, jax.device_count()))
 
   input_rng = onp.random.RandomState(0)
+  test_ds = jax_utils.replicate(test_ds)
 
   for epoch in range(1, num_epochs + 1):
-    optimizer, _ = train_epoch(
-        optimizer, train_ds, batch_size, epoch, input_rng)
-    loss, accuracy = eval_model(optimizer.target, test_ds)
-    logging.info('eval epoch: %d, loss: %.4f, accuracy: %.2f',
-                 epoch, loss, accuracy * 100)
-  return optimizer
+    optimizers, _ = train_epoch(optimizers, train_ds, batch_size, epoch,
+                                input_rng)
+    loss, accuracy = eval_model(optimizers.target, test_ds)
+    logging.info('eval epoch: %d, loss: %s, accuracy: %s', epoch, loss,
+                 accuracy * 100)
+  return optimizers
 
 
 def main(_):
