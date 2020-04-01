@@ -49,16 +49,21 @@ class Conv2D(nn.Module):
         lax.conv_general_dilated, window_strides=strides, padding='VALID',
         dimension_numbers=('NHWC', 'HWIO', 'NHWC'), precision=precision)
 
+    in_features = inputs.shape[-1]
+    kernel_shape = kernel_size + (in_features, features)
+
     def initializer(key, shape):
       # A weightnorm initializer generating a (direction, scale, bias) tuple.
+      # Note that the shape argument is not used.
       direction = nn.initializers.normal()(key, kernel_shape, dtype)
       unnormed_out = conv(inputs, _l2_normalize(direction))
       mean = np.mean(unnormed_out, (0, 1, 2))
       var  = np.std (unnormed_out, (0, 1, 2))
-      return direction, 1 / var, -mean / var
+      return dict(direction=direction, scale=1 / var, bias=-mean / var)
 
-    *_, in_features = inputs.shape
-    kernel_shape = kernel_size + (in_features, features)
-    direction, scale, bias = self.param(
-        'weightnorm_params', None, initializer)
+    # We feed in None as a dummy shape argument to self.param.  Typically
+    # Module.params assumes that the initializer takes in a shape argument but
+    # None can be used as an escape hatch.
+    params = self.param('weightnorm_params', None, initializer)
+    direction, scale, bias = [params[k] for k in ('direction', 'scale', 'bias')]
     return conv(inputs, _make_kernel(direction, scale)) + bias
