@@ -10,11 +10,102 @@ published at ICLR '17 (https://openreview.net/forum?id=BJrFC6ceg).
 """
 from functools import partial
 
-from flax import nn
+import numpy as onp
 
 from jax import lax
+from jax.scipy.special import logsumexp
 import jax.numpy as np
-import jax.numpy.linalg as la
+from jax import vmap
+
+from flax import nn
+
+
+# High level model definition
+@nn.module
+def PixelCNNPP(images, depth=5, features=160, k=10, dropout_p=.5):
+  ConvDown_ = ConvDown.partial(features=features)
+  ConvDownRight_ = ConvDownRight.partial(features=features)
+
+  ResDown_ = ResDown.partial(dropout_p=dropout_p)
+  ResDownRight_ = ResDownRight.partial(dropout_p=dropout_p)
+
+  # Conv Modules which halve or double the spatial dimensions
+  HalveDown = ConvDown_.partial(strides=(2, 2))
+  HalveDownRight = ConvDownRight_.partial(strides=(2, 2))
+
+  DoubleDown = ConvTransposeDown.partial(features=features)
+  DoubleDownRight = ConvTransposeDownRight.partial(features=features)
+
+  # Add channel of ones to distinguish image from padding later on
+  images = np.pad(images, ((0, 0), (0, 0), (0, 0), (0, 1)), constant_values=1)
+
+  # Stack of `(down, down_right)` pairs, where information flows downwards
+  # through `down` and downwards and to the right through `down_right`.
+  stack = []
+
+  # -------------------------- FORWARD PASS ----------------------------------
+  down = shift_down(ConvDown_(images, kernel_size=(2, 3)))
+  down_right = (shift_down(ConvDown_(images, kernel_size=(1, 3)))
+                + shift_right(ConvDownRight_(images, kernel_size=(2, 1))))
+
+  stack.append((down, down_right))
+  for _ in range(depth):
+    down, down_right = ResDown_(down), ResDownRight_(down_right, down)
+    stack.append((down, down_right))
+
+  # Resize spatial dims 32 x 32  -->  16 x 16
+  down, down_right = HalveDown(down), HalveDownRight(down_right)
+  stack.append((down, down_right))
+
+  for _ in range(depth):
+    down, down_right = ResDown_(down), ResDownRight_(down_right, down)
+    stack.append((down, down_right))
+
+  # Resize spatial dims 16 x 16  -->  8 x 8
+  down, down_right = HalveDown(down), HalveDownRight(down_right)
+  stack.append((down, down_right))
+
+  for _ in range(depth):
+    down, down_right = ResDown_(down), ResDownRight_(down_right, down)
+    stack.append((down, down_right))
+
+  # The stack now contains (in order from last appended):
+  #
+  #   Number of layers     Spatial dims
+  #   depth + 1             8 x  8
+  #   depth + 1            16 x 16
+  #   depth + 1            32 x 32
+
+  # -------------------------- REVERSE PASS ----------------------------------
+  down, down_right = stack.pop()
+
+  for _ in range(depth):
+    down_fwd, down_right_fwd = stack.pop()
+    down = ResDown_(down, down_fwd)
+    down_right = ResDownRight_(
+        down_right, np.concatenate((down, down_right_fwd), -1))
+
+  # Resize spatial dims 8 x 8  -->  16 x 16
+  down, down_right = DoubleDown(down), DoubleDownRight(down_right)
+
+  for _ in range(depth + 1):
+    down_fwd, down_right_fwd = stack.pop()
+    down = ResDown_(down, down_fwd)
+    down_right = ResDownRight_(
+        down_right, np.concatenate((down, down_right_fwd), -1))
+
+  # Resize spatial dims 16 x 16  -->  32 x 32
+  down, down_right = DoubleDown(down), DoubleDownRight(down_right)
+
+  for _ in range(depth + 1):
+    down_fwd, down_right_fwd = stack.pop()
+    down = ResDown_(down, down_fwd)
+    down_right = ResDownRight_(
+        down_right, np.concatenate((down, down_right_fwd), -1))
+
+  assert len(stack) == 0
+  return ConvOneByOne(nn.elu(down_right), 10 * k)
+
 
 # General utils
 def center(images):
@@ -37,7 +128,7 @@ shift_down  = partial(spatial_pad, (1, -1), (0,  0))
 shift_right = partial(spatial_pad, (0,  0), (1, -1))
 
 
-# Weightnorm utilities
+# Weightnorm utils
 def _l2_normalize(v):
   """
   Normalize a convolution kernel direction over the in_features and spatial
@@ -61,6 +152,7 @@ class Conv(nn.Module):
             features,
             kernel_size,
             strides=None,
+            padding='VALID',
             transpose=False,
             init_scale=1.,
             dtype=np.float32,
@@ -69,11 +161,11 @@ class Conv(nn.Module):
     strides = strides or (1,) * (inputs.ndim - 2)
 
     if transpose:
-      conv = partial(lax.conv_transpose, strides=strides, padding='VALID',
+      conv = partial(lax.conv_transpose, strides=strides, padding=padding,
                      precision=precision)
     else:
       conv = partial(lax.conv_general_dilated, window_strides=strides,
-                     padding='VALID',
+                     padding=padding,
                      dimension_numbers=('NHWC', 'HWIO', 'NHWC'),
                      precision=precision)
 
@@ -100,78 +192,85 @@ ConvTranspose = Conv.partial(transpose=True)
 ConvOneByOne  = Conv.partial(kernel_size=(1, 1))
 
 @nn.module
-def ConvDown(inputs, features, kernel_size=(2, 3), *args, **kwargs):
+def ConvDown(inputs, features, kernel_size=(2, 3), strides=None, **kwargs):
   """
-  Convolution with spatial padding so that information cannot flow upwards.
+  Convolution with padding so that information cannot flow upwards.
   """
   inputs = np.asarray(inputs, kwargs.get('dtype', np.float32))
+
   k_h, k_w = kernel_size
   assert k_w % 2 == 1, "kernel width must be odd."
-  inputs = spatial_pad((k_h - 1, 0), (k_w // 2, k_w // 2), inputs)
-  return Conv(inputs, features, kernel_size, *args, **kwargs)
+  padding = (( k_h - 1,        0),  # Vertical padding
+             (k_w // 2, k_w // 2))  # Horizontal padding
+
+  return Conv(inputs, features, kernel_size, strides, padding, **kwargs)
 
 @nn.module
-def ConvDownRight(inputs, features, kernel_size=(2, 2), *args, **kwargs):
+def ConvDownRight(inputs, features, kernel_size=(2, 2), strides=None, **kwargs):
   """
-  Convolution with spatial padding so that information cannot flow to the left
+  Convolution with padding so that information cannot flow to the left
   or upwards.
   """
   inputs = np.asarray(inputs, kwargs.get('dtype', np.float32))
+
   k_h, k_w = kernel_size
-  inputs = spatial_pad((k_h - 1, 0), (k_w - 1, 0), inputs)
-  return Conv(inputs, features, kernel_size, *args, **kwargs)
+  padding = ((k_h - 1, 0),  # Vertical padding
+             (k_w - 1, 0))  # Horizontal padding
+
+  return Conv(inputs, features, kernel_size, strides, padding, **kwargs)
 
 @nn.module
 def ConvTransposeDown(
     inputs, features, kernel_size=(2, 3), strides=(2, 2), **kwargs):
   """
-  Transpose convolution with output (negative) spatial padding so that
-  information cannot flow upwards. Strides are (2, 2) by default which implies
-  the spatial dimensions of the output shape are double those of the input
-  shape.
+  Transpose convolution with output slicing so that information cannot flow
+  upwards.  Strides are (2, 2) by default which implies the spatial dimensions
+  of the output shape are double those of the input shape.
   """
   inputs = np.asarray(inputs, kwargs.get('dtype', np.float32))
-  out = ConvTranspose(inputs, features, kernel_size, *args, **kwargs)
   k_h, k_w = kernel_size
-  assert k_w % 2 == 1, "kernel width must be odd."
-  return spatial_pad((0, -(k_h - 1)), (-(k_w // 2), -(k_w // 2)), out)
+  out_h, out_w = onp.multiply(strides, inputs.shape[1:3])
+  return ConvTranspose(inputs, features, kernel_size, strides, **kwargs)[
+      :, :out_h, (k_w - 1) // 2:out_w + (k_w - 1) // 2, :]
 
 @nn.module
 def ConvTransposeDownRight(
     inputs, features, kernel_size=(2, 2), strides=(2, 2), **kwargs):
   """
-  Transpose convolution with output (negative) spatial padding so that
-  information cannot flow to the left or upwards. Strides are (2, 2) by default
-  which implies the spatial dimensions of the output shape are double those of
-  the input shape.
+  Transpose convolution with output slicing so that information cannot flow to
+  the left or upwards. Strides are (2, 2) by default which implies the spatial
+  dimensions of the output shape are double those of the input shape.
   """
   inputs = np.asarray(inputs, kwargs.get('dtype', np.float32))
-  out = ConvTranspose(inputs, features, kernel_size, *args, **kwargs)
   k_h, k_w = kernel_size
-  return spatial_pad((0, -(k_h - 1)), (0, -(k_w - 1)), out)
+  out_h, out_w = onp.multiply(strides, inputs.shape[1:3])
+  return ConvTranspose(inputs, features, kernel_size, strides, **kwargs)[
+      :, :out_h, :out_w]
 
 
-# Resnet blocks
-@nn.module
-def Res(conv_module, inputs, aux=None, nonlinearity=concat_elu, dropout_p=0.):
-  c = inputs.shape[-1]
-  y = conv_module(nonlinearity(inputs), c)
-  if aux is not None:
-    y = nonlinearity(y + ConvOneByOne(nonlinearity(aux), c))
+# Resnet modules
+def make_res(conv_module):
+  @nn.module
+  def Res(inputs, aux=None, nonlinearity=concat_elu, dropout_p=0.):
+    c = inputs.shape[-1]
+    y = conv_module(nonlinearity(inputs), c)
+    if aux is not None:
+      y = nonlinearity(y + ConvOneByOne(nonlinearity(aux), c))
 
-  if dropout_p > 0:
-    y = nn.dropout(y, dropout_p)
+    if dropout_p > 0:
+      y = nn.dropout(y, dropout_p)
 
-  # Set init_scale=0.1 so that the res block is close to the identity at
-  # initialization.
-  a, b = np.split(conv_module(y, 2 * c, init_scale=0.1), 2, axis=-1)
-  return inputs + a * sigmoid(b)
+    # Set init_scale=0.1 so that the res block is close to the identity at
+    # initialization.
+    a, b = np.split(conv_module(y, 2 * c, init_scale=0.1), 2, axis=-1)
+    return inputs + a * nn.sigmoid(b)
+  return Res
 
-ResDown = nn.module(partial(Res, ConvDown))
-ResDownRight = nn.module(partial(Res, ConvDownRight))
+ResDown = make_res(ConvDown)
+ResDownRight = make_res(ConvDownRight)
 
 
-# Logistic mixture distribution utilities
+# Logistic mixture distribution utils
 def conditional_params_from_outputs(img, theta):
   """
   Maps an image `img` and the PixelCNN++ convnet output `theta` to conditional
@@ -210,7 +309,9 @@ def conditional_params_from_outputs(img, theta):
   mean_green = m[..., 1] + t[..., 0] * img[..., 0]
   mean_blue  = m[..., 2] + t[..., 1] * img[..., 0] + t[..., 2] * img[..., 1]
   means = np.stack((mean_red, mean_green, mean_blue), axis=-1)
-  return means, softplus(s), np.moveaxis(logit_weights, -1, 0)
+  return means, nn.softplus(s), np.moveaxis(logit_weights, -1, 0)
+
+batch_conditional_params_from_outputs = vmap(conditional_params_from_outputs)
 
 def logprob_from_conditional_params(images, means, inv_scales, logit_weights):
   """
@@ -227,7 +328,7 @@ def logprob_from_conditional_params(images, means, inv_scales, logit_weights):
   # computing the difference between the logistic cdf half a level above and
   # half a level below the image value. Use np.where to manually set
   # cdf(1) = 1 and cdf(-1) = 0.
-  cum_prob = lambda offset: sigmoid((images - means + offset) * inv_scales)
+  cum_prob = lambda offset: nn.sigmoid((images - means + offset) * inv_scales)
   upper_cum_p = np.where(images ==  1, 1, cum_prob( 1 / 255))
   lower_cum_p = np.where(images == -1, 0, cum_prob(-1 / 255))
   all_logprobs = np.sum(
@@ -242,66 +343,3 @@ def logprob_from_conditional_params(images, means, inv_scales, logit_weights):
 
   # Finally marginalize out mixture components and sum over pixels
   return np.sum(logsumexp(log_mix_coeffs + logprobs, -3), (-2, -1))
-
-
-# High level model definition
-@nn.module
-def PixelCNNPP(images, depth=5, features=160, k=10, dropout_p=.5):
-  ResDown = Resdown.partial(dropout_p=dropout_p)
-  ResDownRight = ResDownRight.partial(dropout_p=dropout_p)
-
-  ConvDown = ConvDown.partial(features=features)
-  ConvDownRight = ConvDownRight.partial(features=features)
-
-  # Conv Modules which halve or double the spatial dimensions
-  HalveDown = ConvDown.partial(strides=(2, 2))
-  HalveDownRight = ConvDownRight.partial(strides=(2, 2))
-
-  DoubleDown = ConvTransposeDown.partial(features=features)
-  DoubleDownRight = ConvTransposeDownRight.partial(features=features)
-
-  # Stack of (down, down_right) pairs, where information flows downwards through
-  # down and downwards and to the right through down_right.
-  stack = []
-
-  # This has side effects on the stack
-  def fwd_block():
-    for _ in range(depth):
-      down, down_right = stack[-1]
-      stack.append((ResDown(down), ResDownRight(down_right, down)))
-    return stack[-1]
-
-  # This also has side effects on the stack
-  def rev_block(depth, down, down_right):
-    for _ in range(depth):
-      down_saved, down_right_saved = stack.pop()
-      down = ResDown(down, down_saved)
-      down_right = ResDownRight(
-          down_right, np.concatenate((down, down_right_saved), -1))
-    return down, down_right
-
-  images = np.pad(images, ((0, 0), (0, 0), (0, 0), (0, 1)), constant_values=1)
-
-  # Forward pass
-  stack.append((down_shift(ConvDown(images, kernel_size=(2, 3))),
-                down_shift(ConvDown(images, kernel_size=(1, 3)))
-                + right_shift(ConvDownRight(images, kernel_size=(2, 1)))))
-
-  down, down_right = fwd_block()
-
-  # 32 x 32  -->  16 x 16
-  stack.append((HalveDown(down), HalveDownRight(down_right)))
-  down, down_right = fwd_block()
-
-  # 16 x 16  -->  8 x 8
-  stack.append((HalveDown(down), HalveDownRight(down_right)))
-  down, down_right = fwd_block()
-
-  u, ul, us, uls = ResnetDownBlock(depth)(us.pop(), uls.pop(), us, uls)
-  u, ul, us, uls = ResnetDownBlock(depth + 1)(
-      DoubleDown()(u), DoubleDownRight()(ul), us, uls)
-  u, ul, us, uls = ResnetDownBlock(depth + 1)(
-      DoubleDown()(u), DoubleDownRight()(ul), us, uls)
-  assert len(stack) == 0
-
-  return ConvOneByOne(nn.elu(ul), 10 * k)

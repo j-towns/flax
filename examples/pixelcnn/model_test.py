@@ -100,7 +100,7 @@ class ModelTest(absltest.TestCase):
     self.assertEqual(direction.shape, (2, 3, 2, 4))
     self.assertEqual(scale.shape, (4,))
     self.assertEqual(bias.shape, (4,))
-    self.assertEqual(out.shape, (1, 4, 3, 4))
+    self.assertEqual(out.shape, (1, 8, 6, 4))
 
   def test_conv_transpose_down_right(self):
     rng = random.PRNGKey(0)
@@ -113,7 +113,17 @@ class ModelTest(absltest.TestCase):
     self.assertEqual(direction.shape, (2, 2, 2, 4))
     self.assertEqual(scale.shape, (4,))
     self.assertEqual(bias.shape, (4,))
-    self.assertEqual(out.shape, (1, 4, 3, 4))
+    self.assertEqual(out.shape, (1, 8, 6, 4))
+
+  def test_pcnn_shape(self):
+    rng = random.PRNGKey(0)
+    rng_inputs, rng_model_init = random.split(rng)
+    x = random.normal(rng_inputs, (2, 4, 4, 3))
+    conv_module = pixelcnn.PixelCNNPP.partial(depth=0, features=2, dropout_p=0)
+    out, initial_params = conv_module.init(rng, x)
+    model = nn.Model(conv_module, initial_params)
+    self.assertEqual(out.shape, (2, 4, 4, 100))
+
 
 
 if __name__ == '__main__':
