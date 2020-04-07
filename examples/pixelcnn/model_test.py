@@ -117,8 +117,7 @@ class ModelTest(absltest.TestCase):
 
   def test_pcnn_shape(self):
     rng = random.PRNGKey(0)
-    rng_inputs, rng_model_init = random.split(rng)
-    x = random.normal(rng_inputs, (2, 4, 4, 3))
+    x = random.normal(rng, (2, 4, 4, 3))
     conv_module = pixelcnn.PixelCNNPP.partial(depth=0, features=2, dropout_p=0)
     out, initial_params = conv_module.init(rng, x)
     model = nn.Model(conv_module, initial_params)

@@ -108,7 +108,7 @@ def PixelCNNPP(images, depth=5, features=160, k=10, dropout_p=.5):
 
 
 # General utils
-def center(images):
+def centre(images):
   """Mapping from {0, 1, ..., 255} to {-1, -1 + 1/127.5, ..., 1}."""
   return images / 127.5 - 1
 
@@ -301,7 +301,7 @@ def conditional_params_from_outputs(img, theta):
   # Each of m, s and t must have shape (k, h, w, c), we effectively spread the
   # last dimension of theta out into c, k, 3, move the k dimension to the front
   # and split along the 3 dimension.
-  m, s, t = np.moveaxis(np.reshape(theta, (h, w, c, k, 3)), (3, 4), (0, 1))
+  m, s, t = np.moveaxis(np.reshape(theta, (h, w, c, k, 3)), (3, 4), (1, 0))
   t = np.tanh(t)
 
   # now condition the means for the last 2 channels (assuming c == 3)
