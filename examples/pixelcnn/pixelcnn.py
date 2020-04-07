@@ -284,7 +284,7 @@ ResDownRight = make_res(ConvDownRight)
 
 
 # Logistic mixture distribution utils
-def conditional_params_from_outputs(img, theta):
+def conditional_params_from_outputs(theta, img):
   """
   Maps an image `img` and the PixelCNN++ convnet output `theta` to conditional
   parameters for a mixture of k logistics over each pixel. Note this method
