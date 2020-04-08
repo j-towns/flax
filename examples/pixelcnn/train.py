@@ -84,7 +84,6 @@ flags.DEFINE_string(
     help=('Directory to store model data'))
 
 
-@functools.partial(jax.jit, static_argnums=(1, 2))
 def create_model(prng_key, example_images, model_def):
   with flax.nn.stateful() as init_state:
     # TODO(j-towns): is this context manager necessary?
@@ -104,18 +103,17 @@ def create_optimizer(model, learning_rate):
 
 
 def neg_log_likelihood_loss(nn_out, images):
+  # The log-likelihood in bits per pixel-channel
   means, inv_scales, logit_weights = (
       pixelcnn.batch_conditional_params_from_outputs(nn_out, images))
   log_likelihoods = pixelcnn.logprob_from_conditional_params(
       images, means, inv_scales, logit_weights)
-  return -jnp.mean(log_likelihoods)
+  return -jnp.mean(log_likelihoods) / (jnp.log(2) * jnp.prod(images.shape[-3:]))
 
 
 def compute_metrics(nn_out, images):
   loss = neg_log_likelihood_loss(nn_out, images)
-  metrics = {
-      'negative log likelihood': loss,
-  }
+  metrics = {'loss': loss}
   metrics = jax.lax.pmean(metrics, 'batch')
   return metrics
 
@@ -127,7 +125,7 @@ def train_step(optimizer, state, batch, prng_key, learning_rate_fn):
     # TODO(j-towns): do we need state for this model?
     with flax.nn.stateful(state) as new_state:
       with flax.nn.stochastic(prng_key):
-        nn_out = model(batch['image'])
+        nn_out = model(batch['image'], FLAGS.dropout_rate)
     loss = neg_log_likelihood_loss(nn_out, batch['image'])
     return loss, new_state
 
@@ -138,7 +136,7 @@ def train_step(optimizer, state, batch, prng_key, learning_rate_fn):
   grad = jax.lax.pmean(grad, 'batch')
   new_optimizer = optimizer.apply_gradient(grad, learning_rate=lr)
 
-  metrics = {'negative log likelihood': jax.lax.pmean(loss, 'batch')}
+  metrics = {'loss': jax.lax.pmean(loss, 'batch')}
   metrics['learning_rate'] = lr
   return new_optimizer, new_state, metrics
 
@@ -146,7 +144,7 @@ def train_step(optimizer, state, batch, prng_key, learning_rate_fn):
 def eval_step(model, state, batch):
   state = jax.lax.pmean(state, 'batch')
   with flax.nn.stateful(state, mutable=False):
-    nn_out = model(batch['image'], train=False)
+    nn_out = model(batch['image'], dropout_p=0)
   return compute_metrics(nn_out, batch['image'])
 
 
@@ -254,13 +252,11 @@ def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
 
       # Log epoch summary
       logging.info(
-          'Epoch %d: TRAIN loss=%.6f, err=%.2f, EVAL loss=%.6f, err=%.2f',
-          epoch, train_summary['loss'], train_summary['error_rate'] * 100.0,
-          eval_summary['loss'], eval_summary['error_rate'] * 100.0)
+          'Epoch %d: TRAIN loss=%.6f, EVAL loss=%.6f',
+          epoch, train_summary['loss'],
+          eval_summary['loss'])
 
       summary_writer.scalar('eval_loss', eval_summary['loss'], epoch)
-      summary_writer.scalar('eval_error_rate', eval_summary['error_rate'],
-                            epoch)
       summary_writer.flush()
 
       epoch += 1
@@ -274,8 +270,7 @@ def main(argv):
 
   model_def = pixelcnn.PixelCNNPP.partial(
       depth=FLAGS.n_resnet,
-      features=FLAGS.n_feature,
-      dropout_p=FLAGS.dropout_rate)
+      features=FLAGS.n_feature)
 
   train(model_def, FLAGS.model_dir, FLAGS.batch_size, FLAGS.init_batch_size,
         FLAGS.num_epochs, FLAGS.learning_rate, FLAGS.lr_decay, FLAGS.rng)
