@@ -52,7 +52,7 @@ flags.DEFINE_integer(
     help=('Batch size to use for data-dependent initialization.'))
 
 flags.DEFINE_integer(
-    'batch_size', default=16,
+    'batch_size', default=64,
     help=('Batch size for training.'))
 
 flags.DEFINE_integer(
@@ -120,7 +120,7 @@ def compute_metrics(nn_out, images):
   return metrics
 
 
-def train_step(optimizer, state, batch, prng_key, learning_rate_fn, l2_reg):
+def train_step(optimizer, state, batch, prng_key, learning_rate_fn):
   """Perform a single training step."""
   def loss_fn(model):
     """loss function used for training."""
@@ -128,7 +128,7 @@ def train_step(optimizer, state, batch, prng_key, learning_rate_fn, l2_reg):
     with flax.nn.stateful(state) as new_state:
       with flax.nn.stochastic(prng_key):
         nn_out = model(batch['image'])
-    loss = cross_entropy_loss(nn_out, batch['image'])
+    loss = neg_log_likelihood_loss(nn_out, batch['image'])
     return loss, new_state
 
   step = optimizer.state.step
@@ -192,11 +192,11 @@ def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
 
   base_learning_rate = learning_rate
 
-  # Create the model
-  image_size = 32
-  # TODO(j-towns): check this doesn't de-sychronize epoch
-  model, state = create_model(
-    rng, load_and_shard_tf_batch(next(train_iter))['image'][0], model_def)
+  # Create the model using data-dependent initialization. Don't shard the init
+  # batch.
+  assert init_batch_size <= batch_size
+  init_batch = next(train_iter)['image']._numpy()[:init_batch_size]
+  model, state = create_model(rng, init_batch, model_def)
   state = jax_utils.replicate(state)
   optimizer = create_optimizer(model, base_learning_rate)
   del model  # don't keep a copy of the initial model
@@ -206,8 +206,7 @@ def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
 
   # pmap the train and eval functions
   p_train_step = jax.pmap(
-      functools.partial(train_step, learning_rate_fn=learning_rate_fn,
-                        l2_reg=l2_reg),
+      functools.partial(train_step, learning_rate_fn=learning_rate_fn),
       axis_name='batch')
   p_eval_step = jax.pmap(eval_step, axis_name='batch')
 

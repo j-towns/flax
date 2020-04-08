@@ -25,15 +25,16 @@ class DataSource(object):
 
   # For ImageNet 32, use dataset_name='imagenet_resized/32x32'.
   def __init__(self, train_batch_size, eval_batch_size, dataset_name='cifar10',
-               shuffle_seed=1):
-    assert dataset_name in {'imagenet_resized/32x32', 'cifar10'}
+      shuffle_seed=1):
+    assert dataset_name in {'imagenet_resized/32x32', 'cifar10'}, \
+      'only imagenet 32 and cifar10 are supported'
     if dataset_name == 'imagenet_resized/32x32':
       self.TRAIN_IMAGES = 1281149
       self.EVAL_IMAGES = 49999
     else:
       self.TRAIN_IMAGES = 50000
       self.EVAL_IMAGES = 10000
-      
+
     # Training set
     train_ds = tfds.load(dataset_name, split='train').cache()
     train_ds = train_ds.repeat()

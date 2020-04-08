@@ -36,6 +36,8 @@ from flax import nn
 # High level model definition
 @nn.module
 def PixelCNNPP(images, depth=5, features=160, k=10, dropout_p=.5):
+  # Special convolutional and resnet blocks which allow information flow
+  # downwards and to the right.
   ConvDown_ = ConvDown.partial(features=features)
   ConvDownRight_ = ConvDownRight.partial(features=features)
 
@@ -54,6 +56,8 @@ def PixelCNNPP(images, depth=5, features=160, k=10, dropout_p=.5):
 
   # Stack of `(down, down_right)` pairs, where information flows downwards
   # through `down` and downwards and to the right through `down_right`.
+  # We refer to the building of the stack as the 'forward pass' and the un-doing
+  # of the stack as the 'reverse pass'.
   stack = []
 
   # -------------------------- FORWARD PASS ----------------------------------
@@ -335,7 +339,7 @@ def logprob_from_conditional_params(images, means, inv_scales, logit_weights):
     {-1, -1 + 1/127.5, -1 + 2/127.5, ..., 1 - 1/127.5, 1}
   """
   # Add a 'mixture' dimension to images
-  images = np.expand_dims(images, 1)
+  images = np.expand_dims(images, -4)
 
   # Compute log-probabilities for each mixture component, pixel and channel by
   # computing the difference between the logistic cdf half a level above and
@@ -344,8 +348,7 @@ def logprob_from_conditional_params(images, means, inv_scales, logit_weights):
   cum_prob = lambda offset: nn.sigmoid((images - means + offset) * inv_scales)
   upper_cum_p = np.where(images ==  1, 1, cum_prob( 1 / 255))
   lower_cum_p = np.where(images == -1, 0, cum_prob(-1 / 255))
-  all_logprobs = np.sum(
-      np.log(np.maximum(upper_cum_p - lower_cum_p, 1e-12)), -1)
+  all_logprobs = np.log(np.maximum(upper_cum_p - lower_cum_p, 1e-12))
 
   # Sum over the channel dimension because mixture components are shared
   # across channels.
