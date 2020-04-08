@@ -125,7 +125,7 @@ def train_step(optimizer, state, batch, prng_key, learning_rate_fn):
     # TODO(j-towns): do we need state for this model?
     with flax.nn.stateful(state) as new_state:
       with flax.nn.stochastic(prng_key):
-        nn_out = model(batch['image'], FLAGS.dropout_rate)
+        nn_out = model(batch['image'], dropout_p=FLAGS.dropout_rate)
     loss = neg_log_likelihood_loss(nn_out, batch['image'])
     return loss, new_state
 
