@@ -20,8 +20,6 @@ import tensorflow_datasets as tfds
 
 class DataSource(object):
   """CIFAR10 or ImageNet 32 data source."""
-  TRAIN_IMAGES = 1281149
-  EVAL_IMAGES = 49999
 
   # For ImageNet 32, use dataset_name='imagenet_resized/32x32'.
   def __init__(self, train_batch_size, eval_batch_size, dataset_name='cifar10',
@@ -40,27 +38,20 @@ class DataSource(object):
     train_ds = train_ds.repeat()
     train_ds = train_ds.shuffle(16 * train_batch_size, seed=shuffle_seed)
 
-    def _process_train_sample(x):
+    def process_sample(x):
       image = tf.cast(x['image'], tf.float32)
       image = image / 127.5 - 1
       batch = {'image': image, 'label': x['label']}
       return batch
 
-    train_ds = train_ds.map(_process_train_sample, num_parallel_calls=128)
+    train_ds = train_ds.map(process_sample, num_parallel_calls=128)
     train_ds = train_ds.batch(train_batch_size, drop_remainder=True)
     train_ds = train_ds.prefetch(10)
     self.train_ds = train_ds
 
     # Test set
     eval_ds = tfds.load(dataset_name, split='test').cache()
-
-    def _process_test_sample(x):
-      image = tf.cast(x['image'], tf.float32)
-      image = image / 127.5 - 1
-      batch = {'image': image, 'label': x['label']}
-      return batch
-
-    eval_ds = eval_ds.map(_process_test_sample, num_parallel_calls=128)
+    eval_ds = eval_ds.map(process_sample, num_parallel_calls=128)
     # Note: samples will be dropped if the number of test samples
     # (EVAL_IMAGES=10000) is not divisible by the evaluation batch
     # size

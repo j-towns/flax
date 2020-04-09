@@ -86,12 +86,10 @@ flags.DEFINE_string(
 
 
 def create_model(prng_key, example_images, model_def):
-  with flax.nn.stateful() as init_state:
-    # TODO(j-towns): is this context manager necessary?
-    with flax.nn.stochastic(jax.random.PRNGKey(0)):
-      _, initial_params = model_def.init(prng_key, example_images)
-      model = flax.nn.Model(model_def, initial_params)
-  return model, init_state
+  with flax.nn.stochastic(jax.random.PRNGKey(0)):
+    _, initial_params = model_def.init(prng_key, example_images)
+    model = flax.nn.Model(model_def, initial_params)
+  return model
 
 
 def create_optimizer(model, learning_rate):
@@ -119,33 +117,29 @@ def compute_metrics(nn_out, images):
   return metrics
 
 
-def train_step(optimizer, state, batch, prng_key, learning_rate_fn):
+def train_step(optimizer, batch, prng_key, learning_rate_fn):
   """Perform a single training step."""
   def loss_fn(model):
     """loss function used for training."""
-    # TODO(j-towns): do we need state for this model?
-    with flax.nn.stateful(state) as new_state:
-      with flax.nn.stochastic(prng_key):
-        nn_out = model(batch['image'], dropout_p=FLAGS.dropout_rate)
+    with flax.nn.stochastic(prng_key):
+      nn_out = model(batch['image'], dropout_p=FLAGS.dropout_rate)
     loss = neg_log_likelihood_loss(nn_out, batch['image'])
-    return loss, new_state
+    return loss
 
   step = optimizer.state.step
   lr = learning_rate_fn(step)
-  grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
-  (loss, new_state), grad = grad_fn(optimizer.target)
+  grad_fn = jax.value_and_grad(loss_fn)
+  loss, grad = grad_fn(optimizer.target)
   grad = jax.lax.pmean(grad, 'batch')
   new_optimizer = optimizer.apply_gradient(grad, learning_rate=lr)
 
   metrics = {'loss': jax.lax.pmean(loss, 'batch')}
   metrics['learning_rate'] = lr
-  return new_optimizer, new_state, metrics
+  return new_optimizer, metrics
 
 
-def eval_step(model, state, batch):
-  state = jax.lax.pmean(state, 'batch')
-  with flax.nn.stateful(state, mutable=False):
-    nn_out = model(batch['image'], dropout_p=0)
+def eval_step(model, batch):
+  nn_out = model(batch['image'], dropout_p=0)
   return compute_metrics(nn_out, batch['image'])
 
 
@@ -199,8 +193,7 @@ def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
   # batch.
   assert init_batch_size <= batch_size
   init_batch = next(train_iter)['image']._numpy()[:init_batch_size]
-  model, state = create_model(rng, init_batch, model_def)
-  state = jax_utils.replicate(state)
+  model = create_model(rng, init_batch, model_def)
   optimizer = create_optimizer(model, base_learning_rate)
   del model  # don't keep a copy of the initial model
 
@@ -225,8 +218,7 @@ def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
     sharded_keys = common_utils.shard_prng_key(step_key)
 
     # Train step
-    optimizer, state, metrics = p_train_step(
-        optimizer, state, batch, sharded_keys)
+    optimizer, metrics = p_train_step(optimizer, batch, sharded_keys)
     train_metrics.append(metrics)
 
     if (step + 1) % steps_per_epoch == 0:
@@ -248,7 +240,7 @@ def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
         # Load and shard the TF batch
         eval_batch = load_and_shard_tf_batch(eval_batch)
         # Step
-        metrics = p_eval_step(optimizer.target, state, eval_batch)
+        metrics = p_eval_step(optimizer.target, eval_batch)
         eval_metrics.append(metrics)
       eval_metrics = common_utils.get_metrics(eval_metrics)
       # Get eval epoch summary for logging

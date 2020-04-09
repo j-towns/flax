@@ -124,6 +124,5 @@ class ModelTest(absltest.TestCase):
     self.assertEqual(out.shape, (2, 4, 4, 100))
 
 
-
 if __name__ == '__main__':
   googletest.main()
