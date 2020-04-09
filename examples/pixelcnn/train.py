@@ -186,8 +186,8 @@ def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
   eval_iter = iter(eval_ds)
 
   # Compute steps per epoch and nb of eval steps
-  steps_per_epoch =  12 # data_source.TRAIN_IMAGES // batch_size
-  steps_per_eval =  100 # data_source.EVAL_IMAGES // batch_size
+  steps_per_epoch = data_source.TRAIN_IMAGES // batch_size
+  steps_per_eval = data_source.EVAL_IMAGES // batch_size
   steps_per_checkpoint = steps_per_epoch * 10
   num_steps = steps_per_epoch * num_epochs
 
