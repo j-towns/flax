@@ -40,7 +40,7 @@ class ModelTest(absltest.TestCase):
     conv_module = pixelcnn.ConvDown.partial(features=4)
     out, initial_params = conv_module.init(rng, x)
     model = nn.Model(conv_module, initial_params)
-    params = model.params['0']['weightnorm_params']
+    params = model.params['Conv_0']['weightnorm_params']
     direction, scale, bias = [params[k] for k in ('direction', 'scale', 'bias')]
     self.assertEqual(direction.shape, (2, 3, 2, 4))
     self.assertEqual(scale.shape, (4,))
@@ -58,7 +58,7 @@ class ModelTest(absltest.TestCase):
     conv_module = pixelcnn.ConvDownRight.partial(features=4)
     out, initial_params = conv_module.init(rng, x)
     model = nn.Model(conv_module, initial_params)
-    params = model.params['0']['weightnorm_params']
+    params = model.params['Conv_0']['weightnorm_params']
     direction, scale, bias = [params[k] for k in ('direction', 'scale', 'bias')]
     self.assertEqual(direction.shape, (2, 2, 2, 4))
     self.assertEqual(scale.shape, (4,))
@@ -95,7 +95,7 @@ class ModelTest(absltest.TestCase):
     conv_module = pixelcnn.ConvTransposeDown.partial(features=4)
     out, initial_params = conv_module.init(rng, x)
     model = nn.Model(conv_module, initial_params)
-    params = model.params['0']['weightnorm_params']
+    params = model.params['Conv_0']['weightnorm_params']
     direction, scale, bias = [params[k] for k in ('direction', 'scale', 'bias')]
     self.assertEqual(direction.shape, (2, 3, 2, 4))
     self.assertEqual(scale.shape, (4,))
@@ -108,7 +108,7 @@ class ModelTest(absltest.TestCase):
     conv_module = pixelcnn.ConvTransposeDownRight.partial(features=4)
     out, initial_params = conv_module.init(rng, x)
     model = nn.Model(conv_module, initial_params)
-    params = model.params['0']['weightnorm_params']
+    params = model.params['Conv_0']['weightnorm_params']
     direction, scale, bias = [params[k] for k in ('direction', 'scale', 'bias')]
     self.assertEqual(direction.shape, (2, 2, 2, 4))
     self.assertEqual(scale.shape, (4,))
