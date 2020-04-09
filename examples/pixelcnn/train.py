@@ -15,6 +15,7 @@
 """PixelCNN++ example."""
 
 import functools
+import datetime
 
 from absl import app
 from absl import flags
@@ -165,7 +166,11 @@ def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
     raise ValueError('PixelCNN++ example should not be run on more than 1 host'
                      ' (for now)')
 
-  summary_writer = tensorboard.SummaryWriter(model_dir)
+  current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+  train_log_dir = model_dir + '/' + current_time + '/train'
+  eval_log_dir = model_dir + '/' + current_time + '/eval'
+  train_summary_writer = tensorboard.SummaryWriter(train_log_dir)
+  eval_summary_writer = tensorboard.SummaryWriter(eval_log_dir)
 
   rng = random.PRNGKey(run_seed)
 
@@ -231,9 +236,8 @@ def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
       train_summary = jax.tree_map(lambda x: x.mean(), train_metrics)
       # Send stats to Tensorboard
       for key, vals in train_metrics.items():
-        tag = 'train_%s' % key
         for i, val in enumerate(vals):
-          summary_writer.scalar(tag, val, step - len(vals) + i + 1)
+          train_summary_writer.scalar(key, val, step - len(vals) + i + 1)
       # Reset train metrics
       train_metrics = []
 
@@ -253,11 +257,11 @@ def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
       # Log epoch summary
       logging.info(
           'Epoch %d: TRAIN loss=%.6f, EVAL loss=%.6f',
-          epoch, train_summary['loss'],
-          eval_summary['loss'])
+          epoch, train_summary['loss'], eval_summary['loss'])
 
-      summary_writer.scalar('eval_loss', eval_summary['loss'], epoch)
-      summary_writer.flush()
+      eval_summary_writer.scalar('loss', eval_summary['loss'], step)
+      train_summary_writer.flush()
+      eval_summary_writer.flush()
 
       epoch += 1
 
