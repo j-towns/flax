@@ -152,9 +152,9 @@ def restore_checkpoint(optimizer):
 
 def save_checkpoint(optimizer):
   # get train state from the first replica
-  state = jax.device_get(jax.tree_map(lambda x: x[0], optimizer))
+  optimizer = jax.device_get(jax.tree_map(lambda x: x[0], optimizer))
   step = int(optimizer.state.step)
-  checkpoints.save_checkpoint(FLAGS.model_dir, state, step, keep=3)
+  checkpoints.save_checkpoint(FLAGS.model_dir, optimizer, step, keep=3)
 
 
 def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
