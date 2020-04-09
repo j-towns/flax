@@ -25,11 +25,12 @@ from flax import jax_utils
 from flax import optim
 from flax.metrics import tensorboard
 import flax.nn
+from flax.training import checkpoints
 from flax.training import common_utils
 
 import jax
 from jax import random
-import jax.nn
+from jax import lax
 import jax.numpy as jnp
 
 import tensorflow.compat.v2 as tf
@@ -85,19 +86,17 @@ flags.DEFINE_string(
     help=('Directory to store model data'))
 
 
-def create_model(prng_key, example_images, model_def):
+def create_model(prng_key, example_images, module):
   with flax.nn.stochastic(jax.random.PRNGKey(0)):
-    _, initial_params = model_def.init(prng_key, example_images)
-    model = flax.nn.Model(model_def, initial_params)
+    _, initial_params = module.init(prng_key, example_images)
+    model = flax.nn.Model(module, initial_params)
   return model
 
 
 def create_optimizer(model, learning_rate):
-  optimizer_def = optim.Adam(learning_rate=learning_rate,
-                             beta1=0.95,
-                             beta2=0.9995)
+  optimizer_def = optim.Adam(
+      learning_rate=learning_rate, beta1=0.95, beta2=0.9995)
   optimizer = optimizer_def.create(model)
-  optimizer = jax_utils.replicate(optimizer)
   return optimizer
 
 
@@ -108,13 +107,6 @@ def neg_log_likelihood_loss(nn_out, images):
   log_likelihoods = pixelcnn.logprob_from_conditional_params(
       images, means, inv_scales, logit_weights)
   return -jnp.mean(log_likelihoods) / (jnp.log(2) * jnp.prod(images.shape[-3:]))
-
-
-def compute_metrics(nn_out, images):
-  loss = neg_log_likelihood_loss(nn_out, images)
-  metrics = {'loss': loss}
-  metrics = jax.lax.pmean(metrics, 'batch')
-  return metrics
 
 
 def train_step(optimizer, batch, prng_key, learning_rate_fn):
@@ -130,17 +122,18 @@ def train_step(optimizer, batch, prng_key, learning_rate_fn):
   lr = learning_rate_fn(step)
   grad_fn = jax.value_and_grad(loss_fn)
   loss, grad = grad_fn(optimizer.target)
-  grad = jax.lax.pmean(grad, 'batch')
+  grad = lax.pmean(grad, 'batch')
   new_optimizer = optimizer.apply_gradient(grad, learning_rate=lr)
 
-  metrics = {'loss': jax.lax.pmean(loss, 'batch')}
+  metrics = {'loss': lax.pmean(loss, 'batch')}
   metrics['learning_rate'] = lr
   return new_optimizer, metrics
 
 
 def eval_step(model, batch):
-  nn_out = model(batch['image'], dropout_p=0)
-  return compute_metrics(nn_out, batch['image'])
+  images = batch['image']
+  nn_out = model(images, dropout_p=0)
+  return {'loss': lax.pmean(neg_log_likelihood_loss(nn_out, images), 'batch')}
 
 
 def load_and_shard_tf_batch(xs):
@@ -153,6 +146,17 @@ def load_and_shard_tf_batch(xs):
   return jax.tree_map(_prepare, xs)
 
 
+def restore_checkpoint(optimizer):
+  return checkpoints.restore_checkpoint(FLAGS.model_dir, optimizer)
+
+
+def save_checkpoint(optimizer):
+  # get train state from the first replica
+  state = jax.device_get(jax.tree_map(lambda x: x[0], optimizer))
+  step = int(optimizer.state.step)
+  checkpoints.save_checkpoint(FLAGS.model_dir, state, step, keep=3)
+
+
 def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
           learning_rate, decay_rate, run_seed=0):
   """Train model."""
@@ -161,8 +165,8 @@ def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
                      ' (for now)')
 
   current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-  train_log_dir = model_dir + '/' + current_time + '/train'
-  eval_log_dir = model_dir + '/' + current_time + '/eval'
+  train_log_dir = model_dir + '/log/train'
+  eval_log_dir = model_dir + '/log/eval'
   train_summary_writer = tensorboard.SummaryWriter(train_log_dir)
   eval_summary_writer = tensorboard.SummaryWriter(eval_log_dir)
 
@@ -170,7 +174,6 @@ def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
 
   if batch_size % jax.device_count() > 0:
     raise ValueError('Batch size must be divisible by the number of devices')
-  device_batch_size = batch_size // jax.device_count()
 
   # Load dataset
   data_source = input_pipeline.DataSource(
@@ -183,8 +186,9 @@ def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
   eval_iter = iter(eval_ds)
 
   # Compute steps per epoch and nb of eval steps
-  steps_per_epoch = data_source.TRAIN_IMAGES // batch_size
-  steps_per_eval = data_source.EVAL_IMAGES // batch_size
+  steps_per_epoch =  12 # data_source.TRAIN_IMAGES // batch_size
+  steps_per_eval =  100 # data_source.EVAL_IMAGES // batch_size
+  steps_per_checkpoint = steps_per_epoch * 10
   num_steps = steps_per_epoch * num_epochs
 
   base_learning_rate = learning_rate
@@ -197,6 +201,10 @@ def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
   optimizer = create_optimizer(model, base_learning_rate)
   del model  # don't keep a copy of the initial model
 
+  optimizer = restore_checkpoint(optimizer)
+  step_offset = int(optimizer.state.step)
+  optimizer = jax_utils.replicate(optimizer)
+
   # Learning rate schedule
   learning_rate_fn = lambda step: base_learning_rate * decay_rate ** step
 
@@ -208,8 +216,7 @@ def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
 
   # Gather metrics
   train_metrics = []
-  epoch = 1
-  for step, batch in zip(range(num_steps), train_iter):
+  for step, batch in zip(range(step_offset, num_steps), train_iter):
     # Generate a PRNG key that will be rolled into the batch
     rng, step_key = jax.random.split(rng)
     # Load and shard the TF batch
@@ -222,6 +229,7 @@ def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
     train_metrics.append(metrics)
 
     if (step + 1) % steps_per_epoch == 0:
+      epoch = step // steps_per_epoch
       # We've finished an epoch
       train_metrics = common_utils.get_metrics(train_metrics)
       # Get training epoch summary for logging
@@ -255,8 +263,8 @@ def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
       train_summary_writer.flush()
       eval_summary_writer.flush()
 
-      epoch += 1
-
+    if (step + 1) % steps_per_checkpoint == 0 or step + 1 == num_steps:
+      save_checkpoint(optimizer)
 
 def main(argv):
   if len(argv) > 1:
@@ -264,11 +272,13 @@ def main(argv):
 
   tf.enable_v2_behavior()
 
-  model_def = pixelcnn.PixelCNNPP.partial(
-      depth=FLAGS.n_resnet,
-      features=FLAGS.n_feature)
+  model_def = pixelcnn.PixelCNNPP.partial(depth=FLAGS.n_resnet,
+                                          features=FLAGS.n_feature)
 
-  train(model_def, FLAGS.model_dir, FLAGS.batch_size, FLAGS.init_batch_size,
+  current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+  model_dir = FLAGS.model_dir + '/' + current_time
+
+  train(model_def, model_dir, FLAGS.batch_size, FLAGS.init_batch_size,
         FLAGS.num_epochs, FLAGS.learning_rate, FLAGS.lr_decay, FLAGS.rng)
 
 

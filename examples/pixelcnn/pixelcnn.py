@@ -266,7 +266,7 @@ def ConvTransposeDownRight(
 
 
 # Resnet modules
-def make_res(conv_module):
+def make_gated_resnet(conv_module):
   @nn.module
   def Res(inputs, aux=None, nonlinearity=concat_elu, dropout_p=0.):
     c = inputs.shape[-1]
@@ -283,8 +283,8 @@ def make_res(conv_module):
     return inputs + a * nn.sigmoid(b)
   return Res
 
-ResDown = make_res(ConvDown)
-ResDownRight = make_res(ConvDownRight)
+ResDown = make_gated_resnet(ConvDown)
+ResDownRight = make_gated_resnet(ConvDownRight)
 
 
 # Logistic mixture distribution utils

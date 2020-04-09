@@ -52,9 +52,8 @@ class DataSource(object):
     # Test set
     eval_ds = tfds.load(dataset_name, split='test').cache()
     eval_ds = eval_ds.map(process_sample, num_parallel_calls=128)
-    # Note: samples will be dropped if the number of test samples
-    # (EVAL_IMAGES=10000) is not divisible by the evaluation batch
-    # size
+    # Note: samples will be dropped if the number of test samples is not
+    # divisible by the evaluation batch size
     eval_ds = eval_ds.batch(eval_batch_size, drop_remainder=True)
     eval_ds = eval_ds.repeat()
     eval_ds = eval_ds.prefetch(10)
