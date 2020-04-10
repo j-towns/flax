@@ -121,7 +121,10 @@ def PixelCNNPP(images, depth=5, features=160, k=10, dropout_p=.5):
         down_right, np.concatenate((down, down_right_fwd), -1))
 
   assert len(stack) == 0
-  return ConvOneByOne(nn.elu(down_right), 10 * k)
+
+  # Note init_scale=0.1 on this layer was not in the original implementation,
+  # but seems to make training more stable.
+  return ConvOneByOne(nn.elu(down_right), 10 * k, init_scale=0.1)
 
 
 # General utils
