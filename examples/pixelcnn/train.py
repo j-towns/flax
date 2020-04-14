@@ -173,7 +173,7 @@ def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
                      ' (for now)')
 
   current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-  log_dir = FLAGS.model_dir + '/log/' + current_time
+  log_dir = model_dir + '/log/' + current_time
   train_log_dir = log_dir + '/train'
   eval_log_dir = log_dir + '/eval'
   train_summary_writer = tensorboard.SummaryWriter(train_log_dir)
