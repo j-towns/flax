@@ -165,8 +165,9 @@ def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
                      ' (for now)')
 
   current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-  train_log_dir = model_dir + '/log/train'
-  eval_log_dir = model_dir + '/log/eval'
+  log_dir = FLAGS.model_dir + '/log/' + current_time
+  train_log_dir = log_dir + '/train'
+  eval_log_dir = log_dir + '/eval'
   train_summary_writer = tensorboard.SummaryWriter(train_log_dir)
   eval_summary_writer = tensorboard.SummaryWriter(eval_log_dir)
 
@@ -274,9 +275,6 @@ def main(argv):
 
   model_def = pixelcnn.PixelCNNPP.partial(depth=FLAGS.n_resnet,
                                           features=FLAGS.n_feature)
-
-  current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-  model_dir = FLAGS.model_dir + '/' + current_time
 
   train(model_def, model_dir, FLAGS.batch_size, FLAGS.init_batch_size,
         FLAGS.num_epochs, FLAGS.learning_rate, FLAGS.lr_decay, FLAGS.rng)
