@@ -83,7 +83,12 @@ flags.DEFINE_integer(
 
 flags.DEFINE_string(
     'model_dir', default='./model_data',
-    help=('Directory to store model data'))
+    help=('Directory to store model data.'))
+
+flags.DEFINE_float(
+    'polyak_decay', default=0.9995,
+    help=('Exponential decay rate of the sum of previous model iterates '
+          'during Polyak averaging.'))
 
 
 def create_model(prng_key, example_images, module):
@@ -109,25 +114,28 @@ def neg_log_likelihood_loss(nn_out, images):
   return -jnp.mean(log_likelihoods) / (jnp.log(2) * jnp.prod(images.shape[-3:]))
 
 
-def train_step(optimizer, batch, prng_key, learning_rate_fn):
+def train_step(optimizer, ema, batch, prng_key, learning_rate_fn):
   """Perform a single training step."""
   def loss_fn(model):
     """loss function used for training."""
     with flax.nn.stochastic(prng_key):
       nn_out = model(batch['image'], dropout_p=FLAGS.dropout_rate)
-    loss = neg_log_likelihood_loss(nn_out, batch['image'])
-    return loss
+    return neg_log_likelihood_loss(nn_out, batch['image'])
 
-  step = optimizer.state.step
-  lr = learning_rate_fn(step)
+  lr = learning_rate_fn(optimizer.state.step)
   grad_fn = jax.value_and_grad(loss_fn)
   loss, grad = grad_fn(optimizer.target)
   grad = lax.pmean(grad, 'batch')
-  new_optimizer = optimizer.apply_gradient(grad, learning_rate=lr)
+  optimizer = optimizer.apply_gradient(grad, learning_rate=lr)
 
-  metrics = {'loss': lax.pmean(loss, 'batch')}
-  metrics['learning_rate'] = lr
-  return new_optimizer, metrics
+  # Compute exponential moving average (aka Polyak decay)
+  ema_decay = FLAGS.polyak_decay
+  ema = jax.tree_multimap(
+      lambda ema, p: ema * ema_decay + (1 - ema_decay) * p,
+      ema, optimizer.target.params)
+
+  metrics = {'loss': lax.pmean(loss, 'batch'), 'learning_rate': lr}
+  return optimizer, ema, metrics
 
 
 def eval_step(model, batch):
@@ -142,19 +150,19 @@ def load_and_shard_tf_batch(xs):
     # Use _numpy() for zero-copy conversion between TF and NumPy.
     x = x._numpy()  # pylint: disable=protected-access
     return x.reshape((local_device_count, -1) + x.shape[1:])
-
   return jax.tree_map(_prepare, xs)
 
 
-def restore_checkpoint(optimizer):
-  return checkpoints.restore_checkpoint(FLAGS.model_dir, optimizer)
+def restore_checkpoint(optimizer, ema):
+  return checkpoints.restore_checkpoint(FLAGS.model_dir, (optimizer, ema))
 
 
-def save_checkpoint(optimizer):
+def save_checkpoint(optimizer, ema):
   # get train state from the first replica
-  optimizer = jax.device_get(jax.tree_map(lambda x: x[0], optimizer))
+  optimizer, ema = jax.device_get(
+      jax.tree_map(lambda x: x[0], (optimizer, ema)))
   step = int(optimizer.state.step)
-  checkpoints.save_checkpoint(FLAGS.model_dir, optimizer, step, keep=3)
+  checkpoints.save_checkpoint(FLAGS.model_dir, (optimizer, ema), step, keep=3)
 
 
 def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
@@ -199,12 +207,13 @@ def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
   assert init_batch_size <= batch_size
   init_batch = next(train_iter)['image']._numpy()[:init_batch_size]
   model = create_model(rng, init_batch, model_def)
+  ema = model.params
   optimizer = create_optimizer(model, base_learning_rate)
   del model  # don't keep a copy of the initial model
 
-  optimizer = restore_checkpoint(optimizer)
+  optimizer, ema = restore_checkpoint(optimizer, ema)
   step_offset = int(optimizer.state.step)
-  optimizer = jax_utils.replicate(optimizer)
+  optimizer, ema = jax_utils.replicate((optimizer, ema))
 
   # Learning rate schedule
   learning_rate_fn = lambda step: base_learning_rate * decay_rate ** step
@@ -226,7 +235,7 @@ def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
     sharded_keys = common_utils.shard_prng_key(step_key)
 
     # Train step
-    optimizer, metrics = p_train_step(optimizer, batch, sharded_keys)
+    optimizer, ema, metrics = p_train_step(optimizer, ema, batch, sharded_keys)
     train_metrics.append(metrics)
 
     if (step + 1) % steps_per_epoch == 0:
@@ -243,13 +252,14 @@ def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
       train_metrics = []
 
       # Evaluation
+      model_ema = optimizer.target.replace(params=ema)
       eval_metrics = []
       for _ in range(steps_per_eval):
         eval_batch = next(eval_iter)
         # Load and shard the TF batch
         eval_batch = load_and_shard_tf_batch(eval_batch)
         # Step
-        metrics = p_eval_step(optimizer.target, eval_batch)
+        metrics = p_eval_step(model_ema, eval_batch)
         eval_metrics.append(metrics)
       eval_metrics = common_utils.get_metrics(eval_metrics)
       # Get eval epoch summary for logging
@@ -265,7 +275,7 @@ def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
       eval_summary_writer.flush()
 
     if (step + 1) % steps_per_checkpoint == 0 or step + 1 == num_steps:
-      save_checkpoint(optimizer)
+      save_checkpoint(optimizer, ema)
 
 def main(argv):
   if len(argv) > 1:
