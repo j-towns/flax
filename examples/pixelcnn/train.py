@@ -276,7 +276,7 @@ def main(argv):
   model_def = pixelcnn.PixelCNNPP.partial(depth=FLAGS.n_resnet,
                                           features=FLAGS.n_feature)
 
-  train(model_def, model_dir, FLAGS.batch_size, FLAGS.init_batch_size,
+  train(model_def, FLAGS.model_dir, FLAGS.batch_size, FLAGS.init_batch_size,
         FLAGS.num_epochs, FLAGS.learning_rate, FLAGS.lr_decay, FLAGS.rng)
 
 
