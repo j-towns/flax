@@ -238,7 +238,7 @@ def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
     optimizer, ema, metrics = p_train_step(optimizer, ema, batch, sharded_keys)
     train_metrics.append(metrics)
 
-    if True:  # (step + 1) % steps_per_epoch == 0:
+    if (step + 1) % steps_per_epoch == 0:
       epoch = step // steps_per_epoch
       # We've finished an epoch
       train_metrics = common_utils.get_metrics(train_metrics)
