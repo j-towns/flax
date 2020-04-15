@@ -12,29 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""ImageNet 32 input pipeline."""
+"""Cifar 10 input pipeline."""
 
 import tensorflow.compat.v2 as tf
 import tensorflow_datasets as tfds
 
 
 class DataSource(object):
-  """CIFAR10 or ImageNet 32 data source."""
+  """CIFAR10 data source."""
 
-  # For ImageNet 32, use dataset_name='imagenet_resized/32x32'.
-  def __init__(self, train_batch_size, eval_batch_size, dataset_name='cifar10',
-      shuffle_seed=1):
-    assert dataset_name in {'imagenet_resized/32x32', 'cifar10'}, \
-      'only imagenet 32 and cifar10 are supported'
-    if dataset_name == 'imagenet_resized/32x32':
-      self.TRAIN_IMAGES = 1281149
-      self.EVAL_IMAGES = 49999
-    else:
-      self.TRAIN_IMAGES = 50000
-      self.EVAL_IMAGES = 10000
+  TRAIN_IMAGES = 50000
+  EVAL_IMAGES = 10000
+
+  def __init__(self, train_batch_size, eval_batch_size, shuffle_seed=1):
 
     # Training set
-    train_ds = tfds.load(dataset_name, split='train').cache()
+    train_ds = tfds.load('cifar_10', split='train').cache()
     train_ds = train_ds.repeat()
     train_ds = train_ds.shuffle(16 * train_batch_size, seed=shuffle_seed)
 
@@ -50,7 +43,7 @@ class DataSource(object):
     self.train_ds = train_ds
 
     # Test set
-    eval_ds = tfds.load(dataset_name, split='test').cache()
+    eval_ds = tfds.load('cifar_10', split='test').cache()
     eval_ds = eval_ds.map(process_sample, num_parallel_calls=128)
     # Note: samples will be dropped if the number of test samples is not
     # divisible by the evaluation batch size
