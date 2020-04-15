@@ -165,7 +165,7 @@ def save_checkpoint(optimizer, ema):
   checkpoints.save_checkpoint(FLAGS.model_dir, (optimizer, ema), step, keep=3)
 
 
-def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
+def train(pcnn_module, model_dir, batch_size, init_batch_size, num_epochs,
           learning_rate, decay_rate, run_seed=0):
   """Train model."""
   if jax.host_count() > 1:
@@ -206,7 +206,7 @@ def train(model_def, model_dir, batch_size, init_batch_size, num_epochs,
   # batch.
   assert init_batch_size <= batch_size
   init_batch = next(train_iter)['image']._numpy()[:init_batch_size]
-  model = create_model(rng, init_batch, model_def)
+  model = create_model(rng, init_batch, pcnn_module)
   ema = model.params
   optimizer = create_optimizer(model, base_learning_rate)
   del model  # don't keep a copy of the initial model
@@ -283,10 +283,10 @@ def main(argv):
 
   tf.enable_v2_behavior()
 
-  model_def = pixelcnn.PixelCNNPP.partial(depth=FLAGS.n_resnet,
-                                          features=FLAGS.n_feature)
+  pcnn_module = pixelcnn.PixelCNNPP.partial(depth=FLAGS.n_resnet,
+                                            features=FLAGS.n_feature)
 
-  train(model_def, FLAGS.model_dir, FLAGS.batch_size, FLAGS.init_batch_size,
+  train(pcnn_module, FLAGS.model_dir, FLAGS.batch_size, FLAGS.init_batch_size,
         FLAGS.num_epochs, FLAGS.learning_rate, FLAGS.lr_decay, FLAGS.rng)
 
 
