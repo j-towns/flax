@@ -27,7 +27,7 @@ class DataSource(object):
   def __init__(self, train_batch_size, eval_batch_size, shuffle_seed=1):
 
     # Training set
-    train_ds = tfds.load('cifar_10', split='train').cache()
+    train_ds = tfds.load('cifar10', split='train').cache()
     train_ds = train_ds.repeat()
     train_ds = train_ds.shuffle(16 * train_batch_size, seed=shuffle_seed)
 
@@ -43,7 +43,7 @@ class DataSource(object):
     self.train_ds = train_ds
 
     # Test set
-    eval_ds = tfds.load('cifar_10', split='test').cache()
+    eval_ds = tfds.load('cifar10', split='test').cache()
     eval_ds = eval_ds.map(process_sample, num_parallel_calls=128)
     # Note: samples will be dropped if the number of test samples is not
     # divisible by the evaluation batch size
