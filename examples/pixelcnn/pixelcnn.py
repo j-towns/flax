@@ -300,38 +300,42 @@ def conditional_params_from_outputs(theta, img):
   Returns a tuple `(means, inverse_scales, logit_weights)` where `means` and
   `inverse_scales` are the conditional means and inverse scales of each mixture
   component (for each pixel-channel) and `logit_weights` are the logits of the
-  mixture weights (for each pixel). The have the following shapes:
+  mixture weights (for each pixel). These have the following shapes:
 
-    means.shape == inv_scales.shape == (k, h, w, c)
-    logit_weights.shape == (k, h, w)
+    means.shape == inv_scales.shape == (batch..., k, h, w, c)
+    logit_weights.shape == (batch..., k, h, w)
 
   Args:
-    img: an image with shape (h, w, c)
-    theta: outputs of PixelCNN++ neural net with shape (h, w, (1 + 3 * c) * k)
+    img: an image with shape (batch..., h, w, c)
+    theta: outputs of PixelCNN++ neural net with shape
+      (batch..., h, w, (1 + 3 * c) * k)
   Returns:
     The tuple `(means, inverse_scales, logit_weights)`.
   """
-  h, w, c = img.shape
-  assert theta.shape[2] % (3 * c + 1) == 0
-  k = theta.shape[2] // (3 * c + 1)
+  *batch, h, w, c = img.shape
+  assert theta.shape[-1] % (3 * c + 1) == 0
+  k = theta.shape[-1] // (3 * c + 1)
 
   logit_weights, theta = theta[..., :k], theta[..., k:]
-  assert theta.shape == (h, w, 3 * c * k)
+  assert theta.shape[-3:] == (h, w, 3 * c * k)
 
-  # Each of m, s and t must have shape (k, h, w, c), we effectively spread the
-  # last dimension of theta out into c, k, 3, move the k dimension to the front
-  # and split along the 3 dimension.
-  m, s, t = np.moveaxis(np.reshape(theta, (h, w, c, k, 3)), (3, 4), (1, 0))
+  # Each of m, s and t must have shape (batch..., k, h, w, c), we effectively
+  # spread the last dimension of theta out into c, k, 3, move the k dimension to
+  # after batch and split along the 3 dimension.
+  m, s, t = np.moveaxis(np.reshape(theta, tuple(batch) + (h, w, c, k, 3)),
+                        (-2, -1), (-4, 0))
+  assert m.shape[-4:] == (k, h, w, c)
   t = np.tanh(t)
+
+  # Add a mixture dimension to images
+  img = np.expand_dims(img, -4)
 
   # now condition the means for the last 2 channels (assuming c == 3)
   mean_red   = m[..., 0]
   mean_green = m[..., 1] + t[..., 0] * img[..., 0]
   mean_blue  = m[..., 2] + t[..., 1] * img[..., 0] + t[..., 2] * img[..., 1]
   means = np.stack((mean_red, mean_green, mean_blue), axis=-1)
-  return means, nn.softplus(s), np.moveaxis(logit_weights, -1, 0)
-
-batch_conditional_params_from_outputs = vmap(conditional_params_from_outputs)
+  return means, nn.softplus(s), np.moveaxis(logit_weights, -1, -3)
 
 def logprob_from_conditional_params(images, means, inv_scales, logit_weights):
   """

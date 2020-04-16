@@ -108,7 +108,7 @@ def create_optimizer(model, learning_rate):
 def neg_log_likelihood_loss(nn_out, images):
   # The log-likelihood in bits per pixel-channel
   means, inv_scales, logit_weights = (
-      pixelcnn.batch_conditional_params_from_outputs(nn_out, images))
+      pixelcnn.conditional_params_from_outputs(nn_out, images))
   log_likelihoods = pixelcnn.logprob_from_conditional_params(
       images, means, inv_scales, logit_weights)
   return -jnp.mean(log_likelihoods) / (jnp.log(2) * jnp.prod(images.shape[-3:]))
