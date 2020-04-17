@@ -125,7 +125,7 @@ def train_step(optimizer, ema, batch, prng_key, learning_rate_fn):
   lr = learning_rate_fn(optimizer.state.step)
   grad_fn = jax.value_and_grad(loss_fn)
   loss, grad = grad_fn(optimizer.target)
-  grad = lax.pmean(grad, 'batch')
+  # grad = lax.pmean(grad, 'batch')
   optimizer = optimizer.apply_gradient(grad, learning_rate=lr)
 
   # Compute exponential moving average (aka Polyak decay)
@@ -134,14 +134,15 @@ def train_step(optimizer, ema, batch, prng_key, learning_rate_fn):
       lambda ema, p: ema * ema_decay + (1 - ema_decay) * p,
       ema, optimizer.target.params)
 
-  metrics = {'loss': lax.pmean(loss, 'batch'), 'learning_rate': lr}
+  # metrics = {'loss': lax.pmean(loss, 'batch'), 'learning_rate': lr}
+  metrics = {'loss': loss, 'learning_rate': lr}
   return optimizer, ema, metrics
 
 
 def eval_step(model, batch):
   images = batch['image']
   nn_out = model(images, dropout_p=0)
-  return {'loss': lax.pmean(neg_log_likelihood_loss(nn_out, images), 'batch')}
+  return {'loss': neg_log_likelihood_loss(nn_out, images)}
 
 
 def load_and_shard_tf_batch(xs):
@@ -149,7 +150,7 @@ def load_and_shard_tf_batch(xs):
   def _prepare(x):
     # Use _numpy() for zero-copy conversion between TF and NumPy.
     x = x._numpy()  # pylint: disable=protected-access
-    return x.reshape((local_device_count, -1) + x.shape[1:])
+    return x # x.reshape((local_device_count, -1) + x.shape[1:])
   return jax.tree_map(_prepare, xs)
 
 
@@ -196,7 +197,7 @@ def train(pcnn_module, model_dir, batch_size, init_batch_size, num_epochs,
 
   # Compute steps per epoch and nb of eval steps
   steps_per_epoch = data_source.TRAIN_IMAGES // batch_size
-  steps_per_eval = data_source.EVAL_IMAGES // batch_size
+  steps_per_eval = 5  # data_source.EVAL_IMAGES // batch_size
   steps_per_checkpoint = steps_per_epoch * 10
   num_steps = steps_per_epoch * num_epochs
 
@@ -213,16 +214,18 @@ def train(pcnn_module, model_dir, batch_size, init_batch_size, num_epochs,
 
   optimizer, ema = restore_checkpoint(optimizer, ema)
   step_offset = int(optimizer.state.step)
-  optimizer, ema = jax_utils.replicate((optimizer, ema))
+  # optimizer, ema = jax_utils.replicate((optimizer, ema))
 
   # Learning rate schedule
   learning_rate_fn = lambda step: base_learning_rate * decay_rate ** step
 
   # pmap the train and eval functions
-  p_train_step = jax.pmap(
-      functools.partial(train_step, learning_rate_fn=learning_rate_fn),
-      axis_name='batch')
-  p_eval_step = jax.pmap(eval_step, axis_name='batch')
+  # p_train_step = jax.pmap(
+  #     functools.partial(train_step, learning_rate_fn=learning_rate_fn),
+  #     axis_name='batch')
+  p_train_step = functools.partial(train_step, learning_rate_fn=learning_rate_fn)
+  # p_eval_step = jax.pmap(eval_step, axis_name='batch')
+  p_eval_step = eval_step
 
   # Gather metrics
   train_metrics = []
@@ -232,16 +235,16 @@ def train(pcnn_module, model_dir, batch_size, init_batch_size, num_epochs,
     # Load and shard the TF batch
     batch = load_and_shard_tf_batch(batch)
     # Shard the step PRNG key
-    sharded_keys = common_utils.shard_prng_key(step_key)
+    sharded_keys = step_key  # common_utils.shard_prng_key(step_key)
 
     # Train step
     optimizer, ema, metrics = p_train_step(optimizer, ema, batch, sharded_keys)
     train_metrics.append(metrics)
 
-    if (step + 1) % steps_per_epoch == 0:
+    if True: # (step + 1) % steps_per_epoch == 0:
       epoch = step // steps_per_epoch
       # We've finished an epoch
-      train_metrics = common_utils.get_metrics(train_metrics)
+      train_metrics = common_utils.stack_forest(train_metrics)  # common_utils.get_metrics(train_metrics)
       # Get training epoch summary for logging
       train_summary = jax.tree_map(lambda x: x.mean(), train_metrics)
       # Send stats to Tensorboard
@@ -261,7 +264,7 @@ def train(pcnn_module, model_dir, batch_size, init_batch_size, num_epochs,
         # Step
         metrics = p_eval_step(model_ema, eval_batch)
         eval_metrics.append(metrics)
-      eval_metrics = common_utils.get_metrics(eval_metrics)
+      eval_metrics = common_utils.stack_forest(eval_metrics)  # common_utils.get_metrics(eval_metrics)
       # Get eval epoch summary for logging
       eval_summary = jax.tree_map(lambda x: x.mean(), eval_metrics)
 
