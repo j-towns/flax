@@ -15,6 +15,8 @@
 # Lint as: python3
 """Sampling from PixelCNN++ using fixed-point iteration.
 """
+import time
+import cProfile
 from functools import partial
 
 from absl import app
@@ -26,6 +28,9 @@ from PIL import Image
 import jax
 from jax import random
 import jax.numpy as jnp
+from jax import jit
+
+from fastar import accelerate, parray
 
 import pixelcnn
 import train
@@ -34,7 +39,7 @@ import train
 FLAGS = flags.FLAGS
 
 flags.DEFINE_integer(
-    'sample_batch_size', default=64,
+    'sample_batch_size', default=1,
     help=('Batch size for sampling.'))
 
 flags.DEFINE_integer(
@@ -55,21 +60,36 @@ def generate_sample(pcnn_module, batch_size, rng_seed=0):
   model = model.replace(params=ema)
 
   # Initialize batch of images
-  device_count = jax.local_device_count()
-  assert not batch_size % device_count, (
-      'Sampling batch size must be a multiple of the device count, got '
-      'sample_batch_size={}, device_count={}.'.format(batch_size,
-                                                      device_count))
-  sample_prev = jnp.zeros((device_count, batch_size // device_count, 32, 32, 3))
+  sample = jnp.zeros((batch_size, 32, 32, 3))
 
-  # and batch of rng keys
-  sample_rng = random.split(rng, device_count)
+  # Wrap sample in a fastar.Parray, indicating that no elements are yet 'known'
+  sample = parray(sample, onp.zeros_like(sample, bool))
 
-  # Generate sample using fixed-point iteration
-  sample = sample_iteration(sample_rng, model, sample_prev)
-  while jnp.any(sample != sample_prev):
-    sample_prev, sample = sample, sample_iteration(sample_rng, model, sample)
-  return jnp.reshape(sample, (batch_size, 32, 32, 3))
+  # Generate sample using Fastar
+  fp_fun = partial(sample_iteration, model)
+  print(time.strftime("%H:%M:%S", time.localtime()))
+  sample, update_fun = run_sampling_iterations(32, fp_fun, rng, sample)
+  print(time.strftime("%H:%M:%S", time.localtime()))
+  return jnp.reshape(sample[0], (batch_size, 32, 32, 3))
+
+@partial(jit, static_argnums=(0, 1))
+def run_sampling_iterations(n_iterations, fp_fun, rng, sample, cache=None):
+  init_fun, update_fun = accelerate(partial(fp_fun, rng))
+  p = cProfile.Profile()
+  p.enable()
+  i = 0
+  if cache is None:
+    sample, cache = init_fun(sample)
+    i = i + 1
+  while i < n_iterations:
+    print(i)
+    sample, cache = update_fun(cache, sample)
+    i = i + 1
+  print(time.strftime("%H:%M:%S", time.localtime()))
+  p.disable()
+  p.dump_stats('tracing_prof')
+  return sample, cache
+
 
 def _categorical_onehot(rng, logit_probs):
   """Sample from a categorical distribution and one-hot encode the sample.
@@ -89,8 +109,7 @@ def conditional_params_to_sample(rng, conditional_params):
   sample = mean + random.logistic(rng_logistic, mean.shape) / inv_scale
   return snap_to_grid(sample)
 
-@partial(jax.pmap, static_broadcasted_argnums=1)
-def sample_iteration(rng, model, sample):
+def sample_iteration(model, rng, sample):
   """PixelCNN++ sampling expressed as a fixed-point iteration.
   """
   c_params = pixelcnn.conditional_params_from_outputs(model(sample), sample)
@@ -100,7 +119,7 @@ def snap_to_grid(sample):
   return jnp.clip(jnp.round((sample + 1) * 127.5) / 127.5 - 1, -1., 1.)
 
 def save_images(batch, fname):
-  n_rows = batch.shape[0] // 16
+  n_rows = (batch.shape[0] - 1) // 16 + 1
   batch = onp.uint8(jnp.round((batch + 1) * 127.5))
   out = onp.full((1 + 33 * n_rows, 1 + 33 * 16, 3), 255, 'uint8')
   for i, im in enumerate(batch):
