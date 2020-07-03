@@ -274,8 +274,13 @@ def ConvTransposeDown(
   inputs = np.asarray(inputs, kwargs.get('dtype', np.float32))
   k_h, k_w = kernel_size
   out_h, out_w = onp.multiply(strides, inputs.shape[1:3])
-  return ConvTranspose(inputs, features, kernel_size, strides, **kwargs)[
-      :, :out_h, (k_w - 1) // 2:out_w + (k_w - 1) // 2, :]
+  out = ConvTranspose(inputs, features, kernel_size, strides, **kwargs)
+  slice_start = out.ndim * [0]
+  slice_start[-2] = (k_w - 1) // 2
+  slice_stop = list(out.shape)
+  slice_stop[-3] = out_h
+  slice_stop[-2] = out_w + (k_w - 1) // 2
+  return lax.slice(out, slice_start, slice_stop)
 
 @nn.module
 def ConvTransposeDownRight(
@@ -288,8 +293,12 @@ def ConvTransposeDownRight(
   inputs = np.asarray(inputs, kwargs.get('dtype', np.float32))
   k_h, k_w = kernel_size
   out_h, out_w = onp.multiply(strides, inputs.shape[1:3])
-  return ConvTranspose(inputs, features, kernel_size, strides, **kwargs)[
-      :, :out_h, :out_w]
+  out = ConvTranspose(inputs, features, kernel_size, strides, **kwargs)
+  slice_start = out.ndim * [0]
+  slice_stop = list(out.shape)
+  slice_stop[-3] = out_h
+  slice_stop[-2] = out_w
+  return lax.slice(out, slice_start, slice_stop)
 
 
 # Resnet modules
@@ -355,10 +364,14 @@ def conditional_params_from_outputs(theta, img):
   inv_scales = np.maximum(nn.softplus(s), 1e-7)
 
   # now condition the means for the last 2 channels (assuming c == 3)
-  mean_red   = m[..., 0]
-  mean_green = m[..., 1] + t[..., 0] * img[..., 0]
-  mean_blue  = m[..., 2] + t[..., 1] * img[..., 0] + t[..., 2] * img[..., 1]
-  means = np.stack((mean_red, mean_green, mean_blue), axis=-1)
+  # mean_red   = m[..., 0]
+  # mean_green = m[..., 1] + t[..., 0] * img[..., 0]
+  # mean_blue  = m[..., 2] + t[..., 1] * img[..., 0] + t[..., 2] * img[..., 1]
+  take = lambda a, i: lax.index_in_dim(a, i, -1, False)
+  mean_r = take(m, 0)
+  mean_g = take(m, 1) + take(t, 0) * take(img, 0)
+  mean_b = take(m, 2) + take(t, 1) * take(img, 0) + take(t, 2) * take(img, 1)
+  means = np.stack((mean_r, mean_g, mean_b), axis=-1)
   return means, inv_scales, np.moveaxis(logit_weights, -1, -3)
 
 def logprob_from_conditional_params(images, means, inv_scales, logit_weights):
