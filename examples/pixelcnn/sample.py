@@ -16,6 +16,7 @@
 """Sampling from PixelCNN++ using fixed-point iteration.
 """
 from functools import partial
+import time
 
 from absl import app
 from absl import flags
@@ -26,9 +27,15 @@ from PIL import Image
 import jax
 from jax import random
 import jax.numpy as jnp
+from jax import config
+from jax import lax
 
 import pixelcnn
 import train
+
+# The following is required to use TPU Driver (libtpu.so) as JAX's backend.
+config.FLAGS.jax_xla_backend = "tpu_driver"
+config.FLAGS.jax_backend_target = "direct://libtpu.so"
 
 
 FLAGS = flags.FLAGS
@@ -67,8 +74,15 @@ def generate_sample(pcnn_module, batch_size, rng_seed=0):
 
   # Generate sample using fixed-point iteration
   sample = sample_iteration(sample_rng, model, sample_prev)
-  while jnp.any(sample != sample_prev):
-    sample_prev, sample = sample, sample_iteration(sample_rng, model, sample)
+
+  def cond_fun(samples):
+    sample_prev, sample = samples
+    return jnp.any(sample_prev != sample)
+  def body_fun(samples):
+    sample_prev, sample = samples
+    return sample, sample_iteration(sample_rng, model, sample)
+
+  _, sample = lax.while_loop(cond_fun, body_fun, (sample_prev, sample))
   return jnp.reshape(sample, (batch_size, 32, 32, 3))
 
 def _categorical_onehot(rng, logit_probs):
