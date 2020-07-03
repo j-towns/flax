@@ -161,6 +161,16 @@ def spatial_pad(pad_vertical, pad_horizontal, operand):
 shift_down  = partial(spatial_pad, (1, -1), (0,  0))
 shift_right = partial(spatial_pad, (0,  0), (1, -1))
 
+def splitaxis(arr, axis, shape):
+  """
+  Inverse of lax.collapse.
+  """
+  axis = lax._canonicalize_axis(axis, arr.ndim)
+  assert np.prod(shape) == np.shape(arr)[axis]
+  for i, d in enumerate(shape[:-1]):
+    arrs = np.split(arr, d, axis + i)
+    arr = np.stack(arrs, axis=axis + i)
+  return arr
 
 # Weightnorm utils
 def _l2_normalize(v):
@@ -328,14 +338,13 @@ def conditional_params_from_outputs(theta, img):
   assert theta.shape[-1] % (3 * c + 1) == 0
   k = theta.shape[-1] // (3 * c + 1)
 
-  logit_weights, theta = theta[..., :k], theta[..., k:]
+  logit_weights, theta = np.split(theta, [k], -1)
   assert theta.shape[-3:] == (h, w, 3 * c * k)
 
   # Each of m, s and t must have shape (batch..., k, h, w, c), we effectively
   # spread the last dimension of theta out into c, k, 3, move the k dimension to
   # after batch and split along the 3 dimension.
-  m, s, t = np.moveaxis(np.reshape(theta, tuple(batch) + (h, w, c, k, 3)),
-                        (-2, -1), (-4, 0))
+  m, s, t = np.moveaxis(splitaxis(theta, -1, (c, k, 3)), (-2, -1), (-4, 0))
   assert m.shape[-4:] == (k, h, w, c)
   t = np.tanh(t)
 
