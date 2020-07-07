@@ -36,8 +36,8 @@ import train
 
 
 # The following is required to use TPU Driver (libtpu.so) as JAX's backend.
-config.FLAGS.jax_xla_backend = "tpu_driver"
-config.FLAGS.jax_backend_target = "direct://libtpu.so"
+# config.FLAGS.jax_xla_backend = "tpu_driver"
+# config.FLAGS.jax_backend_target = "direct://libtpu.so"
 
 FLAGS = flags.FLAGS
 
@@ -49,7 +49,7 @@ flags.DEFINE_integer(
     'sample_rng_seed', default=0,
     help=('Random number generator seed for sampling.'))
 
-def generate_sample(pcnn_module, batch_size, rng_seed=0):
+def generate_sample(pcnn_module, batch_size, rng_seed=1):
   rng = random.PRNGKey(rng_seed)
   sample_rng, model_rng = random.split(rng)
 
@@ -66,10 +66,17 @@ def generate_sample(pcnn_module, batch_size, rng_seed=0):
   sample_mock = jnp.zeros((batch_size, 32, 32, 3))
 
   # Generate sample using fixed-point iteration
-  sample = fastar.lazy_eval_fixed_point(
-      lambda sample: sample_iteration(sample_rng, model, sample), sample_mock)
+  iter_fun = lambda sample: sample_iteration(sample_rng, model, sample)
+  sample = fastar.lazy_eval_fixed_point(iter_fun, sample_mock)
+
+  iterate = lambda n: sample_iteration(iterate(n - 1)) if n > 0 else sample_mock
 
   # Force evaluation by indexing
+  sample[0, 0, 0, 0]
+  sample[0, 0, 0, 1]
+  sample[0, 0, 0, 2]
+  sample[0, 0, 4, 2]
+  from IPython.terminal.debugger import set_trace; set_trace()
   return sample[:]
 
 def _categorical_onehot(rng, logit_probs):
