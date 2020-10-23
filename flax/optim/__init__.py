@@ -21,6 +21,7 @@ from .adafactor import Adafactor
 from .adagrad import Adagrad
 from .base import OptimizerState, OptimizerDef, Optimizer, MultiOptimizer, ModelParamTraversal
 from .dynamic_scale import DynamicScale
+from .ladam import Ladam
 from .lamb import LAMB
 from .lars import LARS
 from .momentum import Momentum
